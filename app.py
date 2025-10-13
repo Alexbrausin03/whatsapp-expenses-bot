@@ -16,7 +16,7 @@ load_dotenv()
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
-GRAPH_URL_WA = f"https://graph.facebook.com/v20.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+GRAPH_URL_WA = f"https://graph.facebook.com/v20.0/881454561707165/messages"
 TZ = ZoneInfo("America/New_York")  # zona horaria para cálculos
 
 # ======== GOOGLE SHEETS (Apps Script) ========
