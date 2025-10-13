@@ -59,9 +59,21 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-
+def ensure_ts_epoch_column():
+    conn = db_connect()
+    c = conn.cursor()
+    # Check if ts_epoch exists
+    c.execute("PRAGMA table_info(expenses)")
+    cols = [row[1] for row in c.fetchall()]
+    if "ts_epoch" not in cols:
+        try:
+            c.execute("ALTER TABLE expenses ADD COLUMN ts_epoch INTEGER")
+            conn.commit()
+        except Exception as e:
+            print("ALTER TABLE expenses add ts_epoch failed:", e)
+    conn.close()
 init_db()
-
+ensure_ts_epoch_column()
 # ======== CATEGORÍAS / TRIGGERS ========
 CATEGORIES = {
     "1": "Renta",
@@ -204,10 +216,12 @@ def parse_sender_and_message(entry):
 def save_expense(user, amount, category_id, category_name):
     conn = db_connect()
     c = conn.cursor()
-    ts_utc = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    ts_utc = now.isoformat()
+    ts_epoch = int(now.timestamp())
     c.execute(
-        "INSERT INTO expenses (user, amount, category_id, category_name, ts_utc) VALUES (?, ?, ?, ?, ?)",
-        (user, amount, int(category_id), category_name, ts_utc)
+        "INSERT INTO expenses (user, amount, category_id, category_name, ts_utc, ts_epoch) VALUES (?, ?, ?, ?, ?, ?)",
+        (user, amount, int(category_id), category_name, ts_utc, ts_epoch)
     )
     conn.commit()
     conn.close()
