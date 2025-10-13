@@ -248,8 +248,30 @@ def last_n_days_bounds_ny(n_days: int):
     label = f"Últimos {n_days} días"
     return start_utc, end_utc, label
 
+def month_bounds_epoch_ny():
+    now_ny = datetime.now(TZ)
+    start_ny = now_ny.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    # first day of next month
+    if start_ny.month == 12:
+        next_month_ny = start_ny.replace(year=start_ny.year + 1, month=1)
+    else:
+        next_month_ny = start_ny.replace(month=start_ny.month + 1)
+    start_epoch = int(start_ny.timestamp())
+    end_epoch = int(next_month_ny.timestamp())
+    label = f"Mes actual ({start_ny.strftime('%Y-%m')})"
+    return start_epoch, end_epoch, label
+
+def last_n_days_bounds_epoch_ny(n_days: int):
+    now_ny = datetime.now(TZ).replace(microsecond=0)
+    start_ny = now_ny - timedelta(days=n_days)
+    start_epoch = int(start_ny.timestamp())
+    end_epoch = int(now_ny.timestamp())
+    label = f"Últimos {n_days} días"
+    return start_epoch, end_epoch, label
+
+
 # ======== CONSULTAS DE TOTALES ========
-def get_total_for_category_in_range(user, category_id, start_utc, end_utc):
+def get_total_for_category_in_range(user, category_id, start_epoch, end_epoch):
     conn = db_connect()
     c = conn.cursor()
     c.execute("""
@@ -257,14 +279,14 @@ def get_total_for_category_in_range(user, category_id, start_utc, end_utc):
         FROM expenses
         WHERE user = ?
           AND category_id = ?
-          AND ts_utc >= ?
-          AND ts_utc < ?
-    """, (user, int(category_id), start_utc, end_utc))
+          AND ts_epoch >= ?
+          AND ts_epoch < ?
+    """, (user, int(category_id), int(start_epoch), int(end_epoch)))
     total = c.fetchone()[0] or 0.0
     conn.close()
     return float(total)
 
-def get_totals_all_categories_in_range(user, start_utc, end_utc):
+def get_totals_all_categories_in_range(user, start_epoch, end_epoch):
     conn = db_connect()
     c = conn.cursor()
     totals = {}
@@ -274,9 +296,9 @@ def get_totals_all_categories_in_range(user, start_utc, end_utc):
             FROM expenses
             WHERE user = ?
               AND category_id = ?
-              AND ts_utc >= ?
-              AND ts_utc < ?
-        """, (user, int(cat_id), start_utc, end_utc))
+              AND ts_epoch >= ?
+              AND ts_epoch < ?
+        """, (user, int(cat_id), int(start_epoch), int(end_epoch)))
         totals[cat_id] = float(c.fetchone()[0] or 0.0)
     conn.close()
     return totals
@@ -419,14 +441,14 @@ def webhook():
                     use_month = True
 
             if use_month:
-                start_utc, end_utc, label = month_bounds_now_ny()
+                start_e, end_e, label = month_bounds_epoch_ny()
             elif days:
-                start_utc, end_utc, label = last_n_days_bounds_ny(days)
+                start_e, end_e, label = last_n_days_bounds_epoch_ny(days)
             else:
-                start_utc, end_utc, label = month_bounds_now_ny()
+                start_e, end_e, label = month_bounds_epoch_ny()
 
             if category:
-                total = get_total_for_category_in_range(user, category, start_utc, end_utc)
+                total = get_total_for_category_in_range(user, category, start_e, end_e)
                 cat_name = CATEGORIES[category]
                 msg = (
                     f"📊 Resumen de *{cat_name}* ({label}):\n"
@@ -439,7 +461,7 @@ def webhook():
                 )
                 send_whatsapp_text(user, msg)
             else:
-                totals = get_totals_all_categories_in_range(user, start_utc, end_utc)
+                totals = get_totals_all_categories_in_range(user, start_e, end_e)
                 table, grand_total = format_totals_table(totals)
                 msg = (
                     f"📊 Resumen ({label}):\n\n"
