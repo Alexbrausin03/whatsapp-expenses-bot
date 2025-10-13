@@ -154,6 +154,8 @@ def send_whatsapp_category_list(to):
     r = requests.post(GRAPH_URL_WA, headers=headers, data=json.dumps(payload), timeout=15)
     if r.status_code >= 300:
         print("Error sending category list:", r.status_code, r.text)
+        return False
+    return True
 
 def ask_for_amount():
     return ("Ok, vamos a ingresar un gasto. 💸\n"
@@ -452,7 +454,16 @@ def webhook():
                 continue
             set_session(user, "awaiting_category", amount)
             send_whatsapp_text(user, f"Perfecto. Monto registrado: ${amount:.2f}.")
-            send_whatsapp_category_list(user)
+            ok = send_whatsapp_category_list(user)
+            if not ok:
+                # Fallback: plain text menu
+                    send_whatsapp_text(user,
+                    "No pude enviar la lista interactiva.\n"
+                    "Escribe un número del 1 al 8:\n"
+                    "1. Renta\n2. Credit card bill\n3. Medical bill\n4. Utility bill\n"
+                    "5. Car payment\n6. Restaurante\n7. Groceries & housekeeping\n8. Traveling"
+    )
+
             continue
 
         # ---------- ESPERANDO CATEGORÍA ----------
