@@ -484,7 +484,7 @@ def webhook():
     elif days:
         start_e, end_e, label = last_n_days_bounds_epoch_ny(days)
     else:
-        start_e, end_e, label = month_bounds_epoch_ny(
+        start_e, end_e, label = month_bounds_epoch_ny()
 
             if category:
                 total = get_total_for_category_in_range(user, category, start_e, end_e)
