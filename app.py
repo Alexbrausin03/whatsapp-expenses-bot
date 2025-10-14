@@ -59,10 +59,10 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+    
 def ensure_ts_epoch_column():
     conn = db_connect()
     c = conn.cursor()
-    # Check if ts_epoch exists
     c.execute("PRAGMA table_info(expenses)")
     cols = [row[1] for row in c.fetchall()]
     if "ts_epoch" not in cols:
@@ -72,8 +72,30 @@ def ensure_ts_epoch_column():
         except Exception as e:
             print("ALTER TABLE expenses add ts_epoch failed:", e)
     conn.close()
+
+def backfill_ts_epoch_from_ts_utc():
+    conn = db_connect()
+    c = conn.cursor()
+    # find rows missing ts_epoch
+    c.execute("SELECT id, ts_utc FROM expenses WHERE ts_epoch IS NULL OR ts_epoch = ''")
+    rows = c.fetchall()
+    updated = 0
+    for rid, ts in rows:
+        try:
+            # Robust parse of ISO 8601
+            dt = datetime.fromisoformat(ts.replace('Z','+00:00'))
+            epoch = int(dt.timestamp())
+            c.execute("UPDATE expenses SET ts_epoch = ? WHERE id = ?", (epoch, rid))
+            updated += 1
+        except Exception as e:
+            print("Backfill parse error for id", rid, ts, e)
+    conn.commit()
+    conn.close()
+    print(f"Backfilled ts_epoch rows: {updated}")
+    
 init_db()
 ensure_ts_epoch_column()
+backfill_ts_epoch_from_ts_utc()
 # ======== CATEGORÍAS / TRIGGERS ========
 CATEGORIES = {
     "1": "Renta",
@@ -251,7 +273,6 @@ def last_n_days_bounds_ny(n_days: int):
 def month_bounds_epoch_ny():
     now_ny = datetime.now(TZ)
     start_ny = now_ny.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    # first day of next month
     if start_ny.month == 12:
         next_month_ny = start_ny.replace(year=start_ny.year + 1, month=1)
     else:
@@ -268,6 +289,8 @@ def last_n_days_bounds_epoch_ny(n_days: int):
     end_epoch = int(now_ny.timestamp())
     label = f"Últimos {n_days} días"
     return start_epoch, end_epoch, label
+
+
 
 
 # ======== CONSULTAS DE TOTALES ========
@@ -531,8 +554,8 @@ def webhook():
                     print("Aviso: no se pudo escribir en Google Sheets (Apps Script).")
 
                 # Total del mes en esa categoría
-                month_start, month_end, _ = month_bounds_now_ny()
-                month_total = get_total_for_category_in_range(user, category_id, month_start, month_end)
+                month_start_e, month_end_e, _ = month_bounds_epoch_ny()
+                month_total = get_total_for_category_in_range(user, category_id, month_start_e, month_end_e)
 
                 msg = (
                     "✅ Gasto guardado:\n"
