@@ -16,14 +16,11 @@ load_dotenv()
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
-GRAPH_URL_WA = f"https://graph.facebook.com/v20.0/881454561707165/messages"
+GRAPH_URL_WA = f"https://graph.facebook.com/v20.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
 TZ = ZoneInfo("America/New_York")  # zona horaria para cálculos
 
 # ======== GOOGLE SHEETS (Apps Script) ========
-# Set this to your deployed Apps Script Web App URL (who has access: Anyone)
 GOOGLE_APPS_SCRIPT_URL = os.getenv("GOOGLE_APPS_SCRIPT_URL", "").strip()
-
-# Optional shared key to prevent abuse (also check it inside your Apps Script)
 GOOGLE_APPS_SCRIPT_KEY = os.getenv("GOOGLE_APPS_SCRIPT_KEY", "").strip()
 
 # ======== FLASK ========
@@ -46,7 +43,8 @@ def init_db():
         amount REAL NOT NULL,
         category_id INTEGER NOT NULL,
         category_name TEXT NOT NULL,
-        ts_utc TEXT NOT NULL
+        ts_utc TEXT NOT NULL,
+        ts_epoch INTEGER
       )
     """)
     # sesiones (persistencia de estado)
@@ -59,7 +57,7 @@ def init_db():
     """)
     conn.commit()
     conn.close()
-    
+
 def ensure_ts_epoch_column():
     conn = db_connect()
     c = conn.cursor()
@@ -76,14 +74,12 @@ def ensure_ts_epoch_column():
 def backfill_ts_epoch_from_ts_utc():
     conn = db_connect()
     c = conn.cursor()
-    # find rows missing ts_epoch
     c.execute("SELECT id, ts_utc FROM expenses WHERE ts_epoch IS NULL OR ts_epoch = ''")
     rows = c.fetchall()
     updated = 0
     for rid, ts in rows:
         try:
-            # Robust parse of ISO 8601
-            dt = datetime.fromisoformat(ts.replace('Z','+00:00'))
+            dt = datetime.fromisoformat((ts or "").replace("Z", "+00:00"))
             epoch = int(dt.timestamp())
             c.execute("UPDATE expenses SET ts_epoch = ? WHERE id = ?", (epoch, rid))
             updated += 1
@@ -91,11 +87,13 @@ def backfill_ts_epoch_from_ts_utc():
             print("Backfill parse error for id", rid, ts, e)
     conn.commit()
     conn.close()
-    print(f"Backfilled ts_epoch rows: {updated}")
-    
+    if updated:
+        print(f"Backfilled ts_epoch rows: {updated}")
+
 init_db()
 ensure_ts_epoch_column()
 backfill_ts_epoch_from_ts_utc()
+
 # ======== CATEGORÍAS / TRIGGERS ========
 CATEGORIES = {
     "1": "Renta",
@@ -290,9 +288,6 @@ def last_n_days_bounds_epoch_ny(n_days: int):
     label = f"Últimos {n_days} días"
     return start_epoch, end_epoch, label
 
-
-
-
 # ======== CONSULTAS DE TOTALES ========
 def get_total_for_category_in_range(user, category_id, start_epoch, end_epoch):
     conn = db_connect()
@@ -340,8 +335,8 @@ def format_totals_table(totals_dict):
     return "\n".join(lines), grand_total
 
 def get_month_total_for_category(user, category_id):
-    start_utc, end_utc, _ = month_bounds_now_ny()
-    return get_total_for_category_in_range(user, category_id, start_utc, end_utc)
+    start_e, end_e, _ = month_bounds_epoch_ny()
+    return get_total_for_category_in_range(user, category_id, start_e, end_e)
 
 # ======== UTILS ========
 def normalize_amount(text):
@@ -358,10 +353,8 @@ def normalize_amount(text):
 def append_expense_to_google_sheet(user, amount, category_id, category_name):
     """
     POST a tu Apps Script Web App (que escribe una fila en tu Google Sheet).
-    Tu Apps Script puede leer e.postData y hacer sheet.appendRow([...]).
     """
     if not GOOGLE_APPS_SCRIPT_URL:
-        # Si no está configurado, simplemente no falla el flujo de WhatsApp
         print("GOOGLE_APPS_SCRIPT_URL not set; skipping Sheets append.")
         return False
     try:
@@ -373,7 +366,7 @@ def append_expense_to_google_sheet(user, amount, category_id, category_name):
             "timestamp_iso": datetime.now(timezone.utc).isoformat()
         }
         headers = {"Content-Type": "application/json"}
-        # (Opcional) shared key para validar en tu Apps Script
+        # (Opcional) shared key via header; or append ?key=... in URL
         if GOOGLE_APPS_SCRIPT_KEY:
             headers["X-AppsScript-Key"] = GOOGLE_APPS_SCRIPT_KEY
         r = requests.post(GOOGLE_APPS_SCRIPT_URL, headers=headers, json=payload, timeout=15)
@@ -439,43 +432,44 @@ def webhook():
             category = None
             days = None
             use_month = False
-            
+
+            # remove the command word
             parts = parts[1:]
+
             if len(parts) == 0:
                 use_month = True
-                
+
             elif len(parts) == 1:
-                # Could be either a category (1–8) or a timeframe (7,15,30) or the word "mes"
+                # Could be category (1–8), timeframe (7/15/30), or "mes"
                 p1 = parts[0]
                 if p1 in {"mes"}:
                     use_month = True
                 elif p1 in {"7", "15", "30"}:
                     days = int(p1)
-                elif p1 in CATEGORIES:  # category id
+                elif p1 in CATEGORIES:
                     category = p1
                     use_month = True
                 else:
                     use_month = True
-                
+
             elif len(parts) >= 2:
                 p1, p2 = parts[0], parts[1]
-                # First token could be category or days
                 if p1 in CATEGORIES:
-                     category = p1
-                     if p2 in {"mes"}:
-                         use_month = True
-                     elif p2 in {"7", "15", "30"}:
-                         days = int(p2)
-                     else:
-                         use_month = True
-                 elif p1 in {"7", "15", "30"}:
+                    category = p1
+                    if p2 in {"mes"}:
+                        use_month = True
+                    elif p2 in {"7", "15", "30"}:
+                        days = int(p2)
+                    else:
+                        use_month = True
+                elif p1 in {"7", "15", "30"}:
                     days = int(p1)
-                 elif p1 in {"mes"}:
+                elif p1 in {"mes"}:
                     use_month = True
-                 else:
+                else:
                     use_month = True
 
-    # Select time window (epoch)
+            # Select time window (epoch)
             if use_month:
                 start_e, end_e, label = month_bounds_epoch_ny()
             elif days:
@@ -483,6 +477,7 @@ def webhook():
             else:
                 start_e, end_e, label = month_bounds_epoch_ny()
 
+            # Build response
             if category:
                 total = get_total_for_category_in_range(user, category, start_e, end_e)
                 cat_name = CATEGORIES[category]
@@ -529,13 +524,13 @@ def webhook():
             ok = send_whatsapp_category_list(user)
             if not ok:
                 # Fallback: plain text menu
-                    send_whatsapp_text(user,
+                send_whatsapp_text(
+                    user,
                     "No pude enviar la lista interactiva.\n"
                     "Escribe un número del 1 al 8:\n"
                     "1. Renta\n2. Credit card bill\n3. Medical bill\n4. Utility bill\n"
                     "5. Car payment\n6. Restaurante\n7. Groceries & housekeeping\n8. Traveling"
-    )
-
+                )
             continue
 
         # ---------- ESPERANDO CATEGORÍA ----------
@@ -585,7 +580,10 @@ def webhook():
                 reset_session(user)
                 continue
             else:
-                send_whatsapp_text(user, "Respuesta inválida. Elige una opción de la lista o escribe un número del 1 al 8.")
+                send_whatsapp_text(
+                    user,
+                    "Respuesta inválida. Elige una opción de la lista o escribe un número del 1 al 8."
+                )
                 send_whatsapp_category_list(user)
                 continue
 
@@ -603,5 +601,4 @@ def webhook():
 
 # ======== RUN ========
 if __name__ == "__main__":
-    # Ejecuta: python app.py
     app.run(host="0.0.0.0", port=5000, debug=True)
