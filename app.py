@@ -16,7 +16,7 @@ load_dotenv()
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
-GRAPH_URL_WA = f"https://graph.facebook.com/v20.0/881454561707165/messages"
+GRAPH_URL_WA = f"https://graph.facebook.com/v20.0/{WHATSAPP_PHONE_NUMBER_ID}/messages"
 TZ = ZoneInfo("America/New_York")  # zona horaria para cálculos
 
 # ======== GOOGLE SHEETS (Apps Script) ========
@@ -510,7 +510,9 @@ def webhook():
             # Build response
             if category:
                 totals = fetch_totals_from_sheets(user, start_e, end_e, category_id=int(category))
+                print("Sheets totals (cat):", totals)
                 if totals:
+                    key = str(int(category))
                     total = float(totals.get(int(category), 0.0))
                 else:
                     total = get_total_for_category_in_range(user, category, start_e, end_e)
@@ -527,6 +529,7 @@ def webhook():
                 send_whatsapp_text(user, msg)
             else:
                 totals = fetch_totals_from_sheets(user, start_e, end_e)
+                print("Sheets totals (all):", totals)
                 if totals:
                     merged = {str(k): float(v or 0.0) for k, v in totals.items()}
                     table, grand_total = format_totals_table(merged)
@@ -602,7 +605,11 @@ def webhook():
 
                 # Total del mes en esa categoría
                 month_start_e, month_end_e, _ = month_bounds_epoch_ny()
-                month_total = get_total_for_category_in_range(user, category_id, month_start_e, month_end_e)
+                totals_m = fetch_totals_from_sheets(user, month_start_e, month_end_e, category_id=int(category_id))
+                if totals_m:
+                    month_total = float(totals_m.get(str(int(category_id)), 0.0))
+                else:
+                    month_total = get_total_for_category_in_range(user, category_id, month_start_e, month_end_e)
 
                 msg = (
                     "✅ Gasto guardado:\n"
