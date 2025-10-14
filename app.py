@@ -378,6 +378,36 @@ def append_expense_to_google_sheet(user, amount, category_id, category_name):
         print("Google Sheets append exception:", e)
         return False
 
+def fetch_totals_from_sheets(user, start_e, end_e, category_id=None):
+    # Build URL with query params
+    if not GOOGLE_APPS_SCRIPT_URL:
+        return None  # not configured
+    try:
+        base = GOOGLE_APPS_SCRIPT_URL  # already has ?key=...
+        params = {
+            "action": "summary",
+            "user": user,
+            "start_e": str(int(start_e)),
+            "end_e": str(int(end_e))
+        }
+        if category_id:
+            params["category_id"] = str(int(category_id))
+        # Build querystring
+        qs = "&".join([f"{k}={requests.utils.quote(v)}" for k, v in params.items()])
+        url = base + ("&" if "?" in base else "?") + qs
+        r = requests.get(url, timeout=15)
+        if r.status_code >= 300:
+            print("Sheets summary error:", r.status_code, r.text)
+            return None
+        data = r.json()
+        if not data.get("ok"):
+            print("Sheets summary not ok:", data)
+            return None
+        return data.get("totals", {})
+    except Exception as e:
+        print("Sheets summary exception:", e)
+        return None
+
 # ======== WEBHOOK VERIFY (GET) ========
 @app.route("/webhook", methods=["GET"])
 def verify():
@@ -479,7 +509,11 @@ def webhook():
 
             # Build response
             if category:
-                total = get_total_for_category_in_range(user, category, start_e, end_e)
+                totals = fetch_totals_from_sheets(user, start_e, end_e, category_id=int(category))
+                if totals:
+                    total = float(totals.get(int(category), 0.0))
+                else:
+                    total = get_total_for_category_in_range(user, category, start_e, end_e)
                 cat_name = CATEGORIES[category]
                 msg = (
                     f"📊 Resumen de *{cat_name}* ({label}):\n"
@@ -492,8 +526,13 @@ def webhook():
                 )
                 send_whatsapp_text(user, msg)
             else:
-                totals = get_totals_all_categories_in_range(user, start_e, end_e)
-                table, grand_total = format_totals_table(totals)
+                totals = fetch_totals_from_sheets(user, start_e, end_e)
+                if totals:
+                    merged = {str(k): float(v or 0.0) for k, v in totals.items()}
+                    table, grand_total = format_totals_table(merged)
+                else:
+                    sqlite_totals = get_totals_all_categories_in_range(user, start_e, end_e)
+                    table, grand_total = format_totals_table(sqlite_totals)
                 msg = (
                     f"📊 Resumen ({label}):\n\n"
                     f"{table}\n\n"
