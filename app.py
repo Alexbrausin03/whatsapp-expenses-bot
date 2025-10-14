@@ -440,10 +440,7 @@ def webhook():
             days = None
             use_month = False
             
-            # remove the command word
             parts = parts[1:]
-            
-            # pattern detection
             if len(parts) == 0:
                 use_month = True
                 
@@ -464,27 +461,27 @@ def webhook():
                 p1, p2 = parts[0], parts[1]
                 # First token could be category or days
                 if p1 in CATEGORIES:
-                   category = p1
-                   if p2 in {"mes"}:
-                       use_month = True
-                   elif p2 in {"7", "15", "30"}:
-                       days = int(p2)
-                   else:
-                       use_month = True
-                elif p1 in {"7", "15", "30"}:
+                     category = p1
+                     if p2 in {"mes"}:
+                         use_month = True
+                     elif p2 in {"7", "15", "30"}:
+                         days = int(p2)
+                     else:
+                         use_month = True
+                 elif p1 in {"7", "15", "30"}:
                     days = int(p1)
-                elif p1 in {"mes"}:
+                 elif p1 in {"mes"}:
                     use_month = True
-                else:
+                 else:
                     use_month = True
 
     # Select time window (epoch)
-    if use_month:
-        start_e, end_e, label = month_bounds_epoch_ny()
-    elif days:
-        start_e, end_e, label = last_n_days_bounds_epoch_ny(days)
-    else:
-        start_e, end_e, label = month_bounds_epoch_ny()
+            if use_month:
+                start_e, end_e, label = month_bounds_epoch_ny()
+            elif days:
+                start_e, end_e, label = last_n_days_bounds_epoch_ny(days)
+            else:
+                start_e, end_e, label = month_bounds_epoch_ny()
 
             if category:
                 total = get_total_for_category_in_range(user, category, start_e, end_e)
