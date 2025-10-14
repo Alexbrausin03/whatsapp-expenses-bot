@@ -439,36 +439,52 @@ def webhook():
             category = None
             days = None
             use_month = False
-
-            if len(parts) == 1:
+            
+            # remove the command word
+            parts = parts[1:]
+            
+            # pattern detection
+            if len(parts) == 0:
                 use_month = True
-            elif len(parts) >= 2:
-                p1 = parts[1]
+                
+            elif len(parts) == 1:
+                # Could be either a category (1–8) or a timeframe (7,15,30) or the word "mes"
+                p1 = parts[0]
                 if p1 in {"mes"}:
                     use_month = True
                 elif p1 in {"7", "15", "30"}:
                     days = int(p1)
-                elif p1 in CATEGORIES:  # categoría
+                elif p1 in CATEGORIES:  # category id
                     category = p1
-                    if len(parts) >= 3:
-                        p2 = parts[2]
-                        if p2 in {"mes"}:
-                            use_month = True
-                        elif p2 in {"7", "15", "30"}:
-                            days = int(p2)
-                        else:
-                            use_month = True
-                    else:
-                        use_month = True
+                    use_month = True
+                else:
+                    use_month = True
+                
+            elif len(parts) >= 2:
+                p1, p2 = parts[0], parts[1]
+                # First token could be category or days
+                if p1 in CATEGORIES:
+                   category = p1
+                   if p2 in {"mes"}:
+                       use_month = True
+                   elif p2 in {"7", "15", "30"}:
+                       days = int(p2)
+                   else:
+                       use_month = True
+                elif p1 in {"7", "15", "30"}:
+                    days = int(p1)
+                elif p1 in {"mes"}:
+                    use_month = True
                 else:
                     use_month = True
 
-            if use_month:
-                start_e, end_e, label = month_bounds_epoch_ny()
-            elif days:
-                start_e, end_e, label = last_n_days_bounds_epoch_ny(days)
-            else:
-                start_e, end_e, label = month_bounds_epoch_ny()
+    # Select time window (epoch)
+    if use_month:
+        start_e, end_e, label = month_bounds_epoch_ny()
+    elif days:
+        start_e, end_e, label = last_n_days_bounds_epoch_ny(days)
+    else:
+        start_e, end_e, label = month_bounds_epoch_ny(
 
             if category:
                 total = get_total_for_category_in_range(user, category, start_e, end_e)
