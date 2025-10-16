@@ -26,10 +26,6 @@ GOOGLE_APPS_SCRIPT_KEY = os.getenv("GOOGLE_APPS_SCRIPT_KEY", "").strip()
 # ======== FLASK ========
 app = Flask(__name__)
 
-import requests, os
-
-APS_URL = os.getenv("GOOGLE_APPS_SCRIPT_URL").rstrip("/")  # deployed web app url
-
 # ======== DB (SQLite) ========
 DB_PATH = "expenses.db"
 
@@ -354,7 +350,6 @@ def normalize_amount(text):
         return None
 
 # ======== GOOGLE SHEETS: enviar fila vía Apps Script ========
-# ======== HELPER: ensure ?key= is in URL ========
 def _url_with_key(url: str) -> str:
     # Ensure the Apps Script URL has ?key=... for doPost / doGet
     if "key=" in url:
@@ -364,6 +359,7 @@ def _url_with_key(url: str) -> str:
         print("⚠️ Warning: GOOGLE_APPS_SCRIPT_KEY is empty.")
         return url
     return url + ("&" if "?" in url else "?") + f"key={key}"
+
 def append_expense_to_google_sheet(user, amount, category_id, category_name):
     """
     POST a tu Apps Script Web App (que escribe una fila en tu Google Sheet).
@@ -380,13 +376,11 @@ def append_expense_to_google_sheet(user, amount, category_id, category_name):
             "timestamp_iso": datetime.now(timezone.utc).isoformat()
         }
         headers = {"Content-Type": "application/json"}
-        # (Opcional) shared key via header; or append ?key=... in URL
         if GOOGLE_APPS_SCRIPT_KEY:
             headers["X-AppsScript-Key"] = GOOGLE_APPS_SCRIPT_KEY
-        url = _url_with_key(GOOGLE_APPS_SCRIPT_URL)    
+        url = _url_with_key(GOOGLE_APPS_SCRIPT_URL)
         r = requests.post(url, headers=headers, json=payload, timeout=15)
 
-        # Debug output — see what Apps Script returns
         print("Sheets append:", r.status_code, r.text)
 
         if r.status_code >= 300:
@@ -402,7 +396,7 @@ def fetch_totals_from_sheets(user, start_e, end_e, category_id=None):
     if not GOOGLE_APPS_SCRIPT_URL:
         return None  # not configured
     try:
-        base = _url_with_key(GOOGLE_APPS_SCRIPT_URL)  
+        base = _url_with_key(GOOGLE_APPS_SCRIPT_URL)
         params = {
             "action": "summary",
             "user": user,
@@ -411,7 +405,6 @@ def fetch_totals_from_sheets(user, start_e, end_e, category_id=None):
         }
         if category_id:
             params["category_id"] = str(int(category_id))
-        # Build querystring
         qs = "&".join([f"{k}={requests.utils.quote(v)}" for k, v in params.items()])
         url = base + ("&" if "?" in base else "?") + qs
         r = requests.get(url, timeout=15)
@@ -427,7 +420,44 @@ def fetch_totals_from_sheets(user, start_e, end_e, category_id=None):
         print("Sheets summary exception:", e)
         return None
 
-        
+# ======== SUMMARY HANDLER (ALL ROWS) ========
+def handle_resumen():
+    """
+    Full summary across ALL rows in Google Sheets (ignores time filters).
+    """
+    try:
+        if not GOOGLE_APPS_SCRIPT_URL:
+            return "⚠️ Falta GOOGLE_APPS_SCRIPT_URL en .env"
+
+        base = _url_with_key(GOOGLE_APPS_SCRIPT_URL)
+        # all-time window (epoch 0 → huge)
+        url = base + ("&" if "?" in base else "?") + "action=summary&start_e=0&end_e=9999999999"
+
+        res = requests.get(url, timeout=15)
+        res.raise_for_status()
+        data = res.json()  # { ok: true, totals: {...} }
+
+        if not data.get("ok"):
+            return f"⚠️ Error leyendo resumen: {data}"
+
+        totals = data.get("totals", {}) or {}
+        # totals keys may be numbers or strings; normalize
+        totals_norm = {str(k): float(v or 0.0) for k, v in totals.items()}
+
+        lines = ["🧮 *Resumen general de todos los gastos:*"]
+        grand_total = 0.0
+        # order by amount desc
+        for cat_id, amt in sorted(totals_norm.items(), key=lambda x: -x[1]):
+            name = CATEGORIES.get(str(cat_id), f"Cat {cat_id}")
+            grand_total += amt
+            lines.append(f"• {name}: ${amt:.2f}")
+
+        lines.append(f"\nTotal general: ${grand_total:.2f}")
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"⚠️ No pude generar el resumen: {e}"
+
 # ======== WEBHOOK VERIFY (GET) ========
 @app.route("/webhook", methods=["GET"])
 def verify():
@@ -460,6 +490,7 @@ def webhook():
                 "🔄 Sesión reiniciada.\n"
                 "Puedes empezar de nuevo escribiendo: *ingresar gasto*.\n\n"
                 "Comandos útiles:\n"
+                "- *resumen* (todas las entradas)\n"
                 "- *resumen mes*\n"
                 "- *resumen 7* | *resumen 15* | *resumen 30*\n"
                 "- *resumen <cat>* o *resumen <cat> 7|15|30|mes*"
@@ -479,6 +510,12 @@ def webhook():
         # ---------- RESUMEN ----------
         if lowered.startswith("resumen"):
             parts = lowered.split()
+            # If plain "resumen", show ALL rows from Sheets
+            if len(parts) == 1:
+                msg = handle_resumen()
+                send_whatsapp_text(user, msg)
+                continue
+
             category = None
             days = None
             use_month = False
@@ -488,9 +525,7 @@ def webhook():
 
             if len(parts) == 0:
                 use_month = True
-
             elif len(parts) == 1:
-                # Could be category (1–8), timeframe (7/15/30), or "mes"
                 p1 = parts[0]
                 if p1 in {"mes"}:
                     use_month = True
@@ -501,7 +536,6 @@ def webhook():
                     use_month = True
                 else:
                     use_month = True
-
             elif len(parts) >= 2:
                 p1, p2 = parts[0], parts[1]
                 if p1 in CATEGORIES:
@@ -637,6 +671,7 @@ def webhook():
                     f"- Categoría: {category_id}. {category_name}\n\n"
                     f"📊 Total del mes en *{category_name}*: ${month_total:.2f}\n\n"
                     "Comandos útiles:\n"
+                    "- *resumen* (todas las entradas)\n"
                     "- *resumen mes*\n"
                     "- *resumen 7* | *resumen 15* | *resumen 30*\n"
                     "- *resumen <cat>* o *resumen <cat> 7|15|30|mes*\n"
@@ -658,7 +693,7 @@ def webhook():
             user,
             "Hola 👋\n"
             "Para registrar un gasto, escribe: *ingresar gasto*.\n\n"
-            "Para ver totales, escribe: *resumen*, *resumen mes*, *resumen 30*, "
+            "Para ver totales, escribe: *resumen* (todas las entradas), *resumen mes*, *resumen 30*, "
             "*resumen 7*, *resumen 15*, o *resumen <cat>* (1–8).\n"
             "Comandos: *reset*, *estado*"
         )
