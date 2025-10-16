@@ -350,6 +350,16 @@ def normalize_amount(text):
         return None
 
 # ======== GOOGLE SHEETS: enviar fila vía Apps Script ========
+# ======== HELPER: ensure ?key= is in URL ========
+def _url_with_key(url: str) -> str:
+    # Ensure the Apps Script URL has ?key=... for doPost / doGet
+    if "key=" in url:
+        return url
+    key = GOOGLE_APPS_SCRIPT_KEY or ""
+    if not key:
+        print("⚠️ Warning: GOOGLE_APPS_SCRIPT_KEY is empty.")
+        return url
+    return url + ("&" if "?" in url else "?") + f"key={key}"
 def append_expense_to_google_sheet(user, amount, category_id, category_name):
     """
     POST a tu Apps Script Web App (que escribe una fila en tu Google Sheet).
@@ -369,7 +379,12 @@ def append_expense_to_google_sheet(user, amount, category_id, category_name):
         # (Opcional) shared key via header; or append ?key=... in URL
         if GOOGLE_APPS_SCRIPT_KEY:
             headers["X-AppsScript-Key"] = GOOGLE_APPS_SCRIPT_KEY
-        r = requests.post(GOOGLE_APPS_SCRIPT_URL, headers=headers, json=payload, timeout=15)
+        url = _url_with_key(GOOGLE_APPS_SCRIPT_URL)    
+        r = requests.post(url, headers=headers, json=payload, timeout=15)
+
+        # Debug output — see what Apps Script returns
+        print("Sheets append:", r.status_code, r.text)
+
         if r.status_code >= 300:
             print("Google Sheets append error:", r.status_code, r.text)
             return False
@@ -383,7 +398,7 @@ def fetch_totals_from_sheets(user, start_e, end_e, category_id=None):
     if not GOOGLE_APPS_SCRIPT_URL:
         return None  # not configured
     try:
-        base = GOOGLE_APPS_SCRIPT_URL  # already has ?key=...
+        base = _url_with_key(GOOGLE_APPS_SCRIPT_URL)  
         params = {
             "action": "summary",
             "user": user,
@@ -513,7 +528,7 @@ def webhook():
                 print("Sheets totals (cat):", totals)
                 if totals:
                     key = str(int(category))
-                    total = float(totals.get(int(category), 0.0))
+                    total = float(totals.get(key, 0.0))
                 else:
                     total = get_total_for_category_in_range(user, category, start_e, end_e)
                 cat_name = CATEGORIES[category]
