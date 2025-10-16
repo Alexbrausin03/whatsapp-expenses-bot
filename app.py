@@ -26,6 +26,10 @@ GOOGLE_APPS_SCRIPT_KEY = os.getenv("GOOGLE_APPS_SCRIPT_KEY", "").strip()
 # ======== FLASK ========
 app = Flask(__name__)
 
+import requests, os
+
+APS_URL = os.getenv("GOOGLE_APPS_SCRIPT_URL").rstrip("/")  # deployed web app url
+
 # ======== DB (SQLite) ========
 DB_PATH = "expenses.db"
 
@@ -422,7 +426,33 @@ def fetch_totals_from_sheets(user, start_e, end_e, category_id=None):
     except Exception as e:
         print("Sheets summary exception:", e)
         return None
+# ======== SUMMARY HANDLER ========
+def handle_resumen():
+    try:
+        res = requests.get(f"{APS_URL}?op=summary", timeout=15)
+        res.raise_for_status()
+        data = res.json()  # { total, byCat, byUser, rows }
 
+        # Build a nice WhatsApp text
+        lines = []
+        lines.append(f"🧮 Resumen (todas las entradas: {data.get('rows',0)}):")
+        lines.append(f"Total: ${data['total']:.2f}")
+
+        if data.get('byCat'):
+            lines.append("\nPor categoría:")
+            for cat, amt in sorted(data['byCat'].items(), key=lambda x: -x[1]):
+                lines.append(f"• {cat}: ${amt:.2f}")
+
+        if data.get('byUser'):
+            lines.append("\nPor usuario:")
+            for usr, amt in sorted(data['byUser'].items(), key=lambda x: -x[1]):
+                lines.append(f"• {usr}: ${amt:.2f}")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Ups, no pude generar el resumen: {e}"
+        
 # ======== WEBHOOK VERIFY (GET) ========
 @app.route("/webhook", methods=["GET"])
 def verify():
