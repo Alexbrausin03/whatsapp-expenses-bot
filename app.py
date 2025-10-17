@@ -47,7 +47,7 @@ def init_db():
         ts_epoch INTEGER
       )
     """)
-    #ingresos
+    # ingresos
     c.execute("""
       CREATE TABLE IF NOT EXISTS deposits (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -215,11 +215,6 @@ def ask_for_income_source():
 
 # ======== PARSEO ENTRANTE (WhatsApp) ========
 def parse_sender_and_message(entry):
-    """
-    Devuelve (user, text, reply_id) donde:
-      - text: texto si el mensaje es 'text'
-      - reply_id: id de la opción si es interacción (list/button)
-    """
     try:
         changes = entry.get("changes", [])
         for ch in changes:
@@ -398,7 +393,6 @@ def normalize_amount(text):
 
 # ======== GOOGLE SHEETS: enviar fila vía Apps Script ========
 def _url_with_key(url: str) -> str:
-    # Ensure the Apps Script URL has ?key=... for doPost / doGet
     if "key=" in url:
         return url
     key = GOOGLE_APPS_SCRIPT_KEY or ""
@@ -408,14 +402,12 @@ def _url_with_key(url: str) -> str:
     return url + ("&" if "?" in url else "?") + f"key={key}"
 
 def append_expense_to_google_sheet(user, amount, category_id, category_name):
-    """
-    POST a tu Apps Script Web App (que escribe una fila en tu Google Sheet).
-    """
     if not GOOGLE_APPS_SCRIPT_URL:
         print("GOOGLE_APPS_SCRIPT_URL not set; skipping Sheets append.")
         return False
     try:
         payload = {
+            "kind": "expense",  # IMPORTANT
             "user": user,
             "amount_usd": float(amount),
             "category_id": int(category_id),
@@ -427,13 +419,8 @@ def append_expense_to_google_sheet(user, amount, category_id, category_name):
             headers["X-AppsScript-Key"] = GOOGLE_APPS_SCRIPT_KEY
         url = _url_with_key(GOOGLE_APPS_SCRIPT_URL)
         r = requests.post(url, headers=headers, json=payload, timeout=15)
-
         print("Sheets append:", r.status_code, r.text)
-
-        if r.status_code >= 300:
-            print("Google Sheets append error:", r.status_code, r.text)
-            return False
-        return True
+        return r.status_code < 300
     except Exception as e:
         print("Google Sheets append exception:", e)
         return False
@@ -462,9 +449,8 @@ def append_income_to_google_sheet(user, amount, source):
         return False
 
 def fetch_totals_from_sheets(user, start_e, end_e, category_id=None):
-    # Build URL with query params
     if not GOOGLE_APPS_SCRIPT_URL:
-        return None  # not configured
+        return None
     try:
         base = _url_with_key(GOOGLE_APPS_SCRIPT_URL)
         params = {
@@ -498,7 +484,7 @@ def fetch_balance_from_sheets(user, start_e, end_e):
         qs = f"action=balance&user={requests.utils.quote(user)}&start_e={int(start_e)}&end_e={int(end_e)}"
         url = base + ("&" if "?" in base else "?") + qs
         r = requests.get(url, timeout=15)
-        if r.status_code >= 300: 
+        if r.status_code >= 300:
             print("Sheets balance error:", r.status_code, r.text)
             return None
         data = r.json()
@@ -512,39 +498,26 @@ def fetch_balance_from_sheets(user, start_e, end_e):
 
 # ======== SUMMARY HANDLER (ALL ROWS) ========
 def handle_resumen():
-    """
-    Full summary across ALL rows in Google Sheets (ignores time filters).
-    """
     try:
         if not GOOGLE_APPS_SCRIPT_URL:
             return "⚠️ Falta GOOGLE_APPS_SCRIPT_URL en .env"
-
         base = _url_with_key(GOOGLE_APPS_SCRIPT_URL)
-        # all-time window (epoch 0 → huge)
         url = base + ("&" if "?" in base else "?") + "action=summary&start_e=0&end_e=9999999999"
-
         res = requests.get(url, timeout=15)
         res.raise_for_status()
-        data = res.json()  # { ok: true, totals: {...} }
-
+        data = res.json()
         if not data.get("ok"):
             return f"⚠️ Error leyendo resumen: {data}"
-
         totals = data.get("totals", {}) or {}
-        # totals keys may be numbers or strings; normalize
         totals_norm = {str(k): float(v or 0.0) for k, v in totals.items()}
-
         lines = ["🧮 *Resumen general de todos los gastos:*"]
         grand_total = 0.0
-        # order by amount desc
         for cat_id, amt in sorted(totals_norm.items(), key=lambda x: -x[1]):
             name = CATEGORIES.get(str(cat_id), f"Cat {cat_id}")
             grand_total += amt
             lines.append(f"• {name}: ${amt:.2f}")
-
         lines.append(f"\nTotal general: ${grand_total:.2f}")
         return "\n".join(lines)
-
     except Exception as e:
         return f"⚠️ No pude generar el resumen: {e}"
 
@@ -564,321 +537,318 @@ def webhook():
     data = request.get_json(silent=True, force=True) or {}
     entries = data.get("entry", [])
     for entry in entries:
-        user, text, reply_id = parse_sender_and_message(entry)
-        if not user:
-            continue
-
-        sess = get_session(user)
-        state = sess["state"]
-        lowered = (text or "").strip().lower()
-
-        # ---------- RESET ----------
-        if lowered in {"reset", "reiniciar", "cancel", "cancelar"}:
-            reset_session(user)
-            send_whatsapp_text(
-                user,
-                "🔄 Sesión reiniciada.\n"
-                "Puedes empezar de nuevo escribiendo: *ingresar gasto*.\n\n"
-                "Comandos útiles:\n"
-                "- *resumen* (todas las entradas)\n"
-                "- *resumen mes*\n"
-                "- *resumen 7* | *resumen 15* | *resumen 30*\n"
-                "- *resumen <cat>* o *resumen <cat> 7|15|30|mes*"
-            )
-            continue
-
-        # ---------- ESTADO (diagnóstico) ----------
-        if lowered == "estado":
-            sess_dbg = get_session(user)
-            send_whatsapp_text(
-                user,
-                f"🧭 Estado actual: {sess_dbg['state']}\n"
-                f"Monto en memoria: {sess_dbg['amount'] if sess_dbg['amount'] is not None else '—'}"
-            )
-            continue
-
-        # ---------- RESUMEN ----------
-        if lowered.startswith("resumen"):
-            parts = lowered.split()
-            # If plain "resumen", show ALL rows from Sheets
-            if len(parts) == 1:
-                msg = handle_resumen()
-                send_whatsapp_text(user, msg)
+        try:
+            user, text, reply_id = parse_sender_and_message(entry)
+            if not user:
                 continue
 
-            category = None
-            days = None
-            use_month = False
+            sess = get_session(user)
+            state = sess["state"]
+            lowered = (text or "").strip().lower()
 
-            # remove the command word
-            parts = parts[1:]
-
-            if len(parts) == 0:
-                use_month = True
-            elif len(parts) == 1:
-                p1 = parts[0]
-                if p1 in {"mes"}:
-                    use_month = True
-                elif p1 in {"7", "15", "30"}:
-                    days = int(p1)
-                elif p1 in CATEGORIES:
-                    category = p1
-                    use_month = True
-                else:
-                    use_month = True
-            elif len(parts) >= 2:
-                p1, p2 = parts[0], parts[1]
-                if p1 in CATEGORIES:
-                    category = p1
-                    if p2 in {"mes"}:
-                        use_month = True
-                    elif p2 in {"7", "15", "30"}:
-                        days = int(p2)
-                    else:
-                        use_month = True
-                elif p1 in {"7", "15", "30"}:
-                    days = int(p1)
-                elif p1 in {"mes"}:
-                    use_month = True
-                else:
-                    use_month = True
-
-            # Select time window (epoch)
-            if use_month:
-                start_e, end_e, label = month_bounds_epoch_ny()
-            elif days:
-                start_e, end_e, label = last_n_days_bounds_epoch_ny(days)
-            else:
-                start_e, end_e, label = month_bounds_epoch_ny()
-
-            # Build response
-            if category:
-                totals = fetch_totals_from_sheets(user, start_e, end_e, category_id=int(category))
-                print("Sheets totals (cat):", totals)
-                if totals:
-                    key = str(int(category))
-                    total = float(totals.get(key, 0.0))
-                else:
-                    total = get_total_for_category_in_range(user, category, start_e, end_e)
-                cat_name = CATEGORIES[category]
-                msg = (
-                    f"📊 Resumen de *{cat_name}* ({label}):\n"
-                    f"Total: ${total:.2f}\n\n"
-                    "Puedes usar:\n"
-                    "- resumen 7 | 15 | 30\n"
-                    "- resumen mes\n"
-                    "- resumen <cat>\n"
-                    "- resumen <cat> 7 | 15 | 30 | mes"
-                )
-                send_whatsapp_text(user, msg)
-            else:
-                totals = fetch_totals_from_sheets(user, start_e, end_e)
-                print("Sheets totals (all):", totals)
-                if totals:
-                    merged = {str(k): float(v or 0.0) for k, v in totals.items()}
-                    table, grand_total = format_totals_table(merged)
-                else:
-                    sqlite_totals = get_totals_all_categories_in_range(user, start_e, end_e)
-                    table, grand_total = format_totals_table(sqlite_totals)
-                msg = (
-                    f"📊 Resumen ({label}):\n\n"
-                    f"{table}\n\n"
-                    f"Total general: ${grand_total:.2f}\n\n"
-                    "Usa:\n"
-                    "- resumen 7 | 15 | 30\n"
-                    "- resumen mes\n"
-                    "- resumen <cat>\n"
-                    "- resumen <cat> 7 | 15 | 30 | mes"
-                )
-                send_whatsapp_text(user, msg)
-            continue
-        # ---------- SALDO (ingresos - gastos) ----------
-        if lowered.startswith("saldo"):
-            parts = lowered.split()[1:]
-            # default: month
-            days = None
-            use_month = True if not parts else False
-            if parts:
-                p1 = parts[0]
-                if p1 in {"mes"}:
-                    use_month = True
-                elif p1 in {"7", "15", "30"}:
-                    days = int(p1)
-                else:
-                    use_month = True
-
-        if use_month:
-            start_e, end_e, label = month_bounds_epoch_ny()
-        elif days:
-            start_e, end_e, label = last_n_days_bounds_epoch_ny(days)
-        else:
-            start_e, end_e, label = month_bounds_epoch_ny()
-
-        data = fetch_balance_from_sheets(user, start_e, end_e)
-        if data:
-            exp_total = float(data.get("expenses_total", 0.0))
-            inc_total = float(data.get("incomes_total", 0.0))
-        else:
-            # fallback to SQLite
-            exp_by_cat = get_totals_all_categories_in_range(user, start_e, end_e)
-            exp_total = sum(exp_by_cat.values())
-            inc_total = get_income_total_in_range(user, start_e, end_e)
-
-        balance = inc_total - exp_total
-        msg = (
-            f"📘 *Saldo ({label})*\n"
-            f"Ingresos: ${inc_total:.2f}\n"
-            f"Gastos:   ${exp_total:.2f}\n"
-            f"──────────────\n"
-            f"*Balance:* ${balance:.2f}"
-        )
-        send_whatsapp_text(user, msg)
-        continue
-        # ---------- INICIAR FLUJO DE INGRESO ----------
-        if lowered in INCOME_TRIGGERS:
-            set_session(user, "awaiting_income_amount", None)
-            send_whatsapp_text(user, ask_for_income_amount())
-            continue
-
-        # ---------- INICIAR FLUJO DE GASTO ----------
-        if lowered in TRIGGERS:
-            set_session(user, "awaiting_amount", None)
-            send_whatsapp_text(user, ask_for_amount())
-            continue
-
-        # ---------- ESPERANDO MONTO ----------
-        if state == "awaiting_amount":
-            amount = normalize_amount(text or "")
-            if amount is None or amount <= 0:
-                send_whatsapp_text(user, "El valor no parece válido. Intenta de nuevo (ej: 12.75).")
-                continue
-            set_session(user, "awaiting_category", amount)
-            send_whatsapp_text(user, f"Perfecto. Monto registrado: ${amount:.2f}.")
-            ok = send_whatsapp_category_list(user)
-            if not ok:
-                # Fallback: plain text menu
+            # ---------- RESET ----------
+            if lowered in {"reset", "reiniciar", "cancel", "cancelar"}:
+                reset_session(user)
                 send_whatsapp_text(
                     user,
-                    "No pude enviar la lista interactiva.\n"
-                    "Escribe un número del 1 al 8:\n"
-                    "1. Renta\n2. Credit card bill\n3. Medical bill\n4. Utility bill\n"
-                    "5. Car payment\n6. Restaurante\n7. Groceries & housekeeping\n8. Traveling"
-                )
-            continue
-
-        # ---------- ESPERANDO MONTO DE INGRESO ----------
-        if state == "awaiting_income_amount":
-            amount = normalize_amount(text or "")
-            if amount is None or amount <= 0:
-                send_whatsapp_text(user, "El monto no parece válido. Intenta de nuevo (ej: 1200.00).")
-                continue
-            set_session(user, "awaiting_income_source", amount)
-            send_whatsapp_text(user, f"Perfecto. Ingreso: ${amount:.2f}.\n" + ask_for_income_source())
-            continue
-
-        # ---------- ESPERANDO CATEGORÍA ----------
-        if state == "awaiting_category":
-            chosen = None
-            if reply_id and reply_id in CATEGORIES:
-                chosen = reply_id
-            elif lowered in CATEGORIES:
-                chosen = lowered
-
-            if chosen:
-                # leer amount guardado
-                sess2 = get_session(user)
-                amount = float(sess2["amount"] or 0.0)
-                category_id = chosen
-                category_name = CATEGORIES[category_id]
-
-                # Guarda en SQLite
-                save_expense(user, amount, category_id, category_name)
-
-                # Enviar a Google Sheets (Apps Script)
-                ok_sheet = append_expense_to_google_sheet(
-                    user=user,
-                    amount=amount,
-                    category_id=category_id,
-                    category_name=category_name
-                )
-                if not ok_sheet:
-                    print("Aviso: no se pudo escribir en Google Sheets (Apps Script).")
-
-                # Total del mes en esa categoría
-                month_start_e, month_end_e, _ = month_bounds_epoch_ny()
-                totals_m = fetch_totals_from_sheets(user, month_start_e, month_end_e, category_id=int(category_id))
-                if totals_m:
-                    month_total = float(totals_m.get(str(int(category_id)), 0.0))
-                else:
-                    month_total = get_total_for_category_in_range(user, category_id, month_start_e, month_end_e)
-
-                msg = (
-                    "✅ Gasto guardado:\n"
-                    f"- Monto: ${amount:.2f}\n"
-                    f"- Categoría: {category_id}. {category_name}\n\n"
-                    f"📊 Total del mes en *{category_name}*: ${month_total:.2f}\n\n"
+                    "🔄 Sesión reiniciada.\n"
+                    "Puedes empezar de nuevo escribiendo: *ingresar gasto*.\n\n"
                     "Comandos útiles:\n"
                     "- *resumen* (todas las entradas)\n"
                     "- *resumen mes*\n"
                     "- *resumen 7* | *resumen 15* | *resumen 30*\n"
-                    "- *resumen <cat>* o *resumen <cat> 7|15|30|mes*\n"
-                    "Escribe *ingresar gasto* para capturar otro."
+                    "- *resumen <cat>* o *resumen <cat> 7|15|30|mes*"
                 )
-                send_whatsapp_text(user, msg)
-                reset_session(user)
                 continue
-            else:
+
+            # ---------- ESTADO ----------
+            if lowered == "estado":
+                sess_dbg = get_session(user)
                 send_whatsapp_text(
                     user,
-                    "Respuesta inválida. Elige una opción de la lista o escribe un número del 1 al 8."
+                    f"🧭 Estado actual: {sess_dbg['state']}\n"
+                    f"Monto en memoria: {sess_dbg['amount'] if sess_dbg['amount'] is not None else '—'}"
                 )
-                send_whatsapp_category_list(user)
                 continue
 
-        # ---------- ESPERANDO ORIGEN DE INGRESO ----------
-        if state == "awaiting_income_source":
-            source = (text or "").strip()
-            if len(source) < 2:
-                send_whatsapp_text(user, "Por favor escribe un origen válido (ej: Salario, Transferencia).")
+            # ---------- RESUMEN ----------
+            if lowered.startswith("resumen"):
+                parts = lowered.split()
+                if len(parts) == 1:
+                    msg = handle_resumen()
+                    send_whatsapp_text(user, msg)
+                    continue
+
+                category = None
+                days = None
+                use_month = False
+                parts = parts[1:]
+
+                if len(parts) == 0:
+                    use_month = True
+                elif len(parts) == 1:
+                    p1 = parts[0]
+                    if p1 in {"mes"}:
+                        use_month = True
+                    elif p1 in {"7", "15", "30"}:
+                        days = int(p1)
+                    elif p1 in CATEGORIES:
+                        category = p1
+                        use_month = True
+                    else:
+                        use_month = True
+                elif len(parts) >= 2:
+                    p1, p2 = parts[0], parts[1]
+                    if p1 in CATEGORIES:
+                        category = p1
+                        if p2 in {"mes"}:
+                            use_month = True
+                        elif p2 in {"7", "15", "30"}:
+                            days = int(p2)
+                        else:
+                            use_month = True
+                    elif p1 in {"7", "15", "30"}:
+                        days = int(p1)
+                    elif p1 in {"mes"}:
+                        use_month = True
+                    else:
+                        use_month = True
+
+                if use_month:
+                    start_e, end_e, label = month_bounds_epoch_ny()
+                elif days:
+                    start_e, end_e, label = last_n_days_bounds_epoch_ny(days)
+                else:
+                    start_e, end_e, label = month_bounds_epoch_ny()
+
+                if category:
+                    totals = fetch_totals_from_sheets(user, start_e, end_e, category_id=int(category))
+                    if totals:
+                        key = str(int(category))
+                        total = float(totals.get(key, 0.0))
+                    else:
+                        total = get_total_for_category_in_range(user, category, start_e, end_e)
+                    cat_name = CATEGORIES[category]
+                    msg = (
+                        f"📊 Resumen de *{cat_name}* ({label}):\n"
+                        f"Total: ${total:.2f}\n\n"
+                        "Puedes usar:\n"
+                        "- resumen 7 | 15 | 30\n"
+                        "- resumen mes\n"
+                        "- resumen <cat>\n"
+                        "- resumen <cat> 7 | 15 | 30 | mes"
+                    )
+                    send_whatsapp_text(user, msg)
+                else:
+                    totals = fetch_totals_from_sheets(user, start_e, end_e)
+                    if totals:
+                        merged = {str(k): float(v or 0.0) for k, v in totals.items()}
+                        table, grand_total = format_totals_table(merged)
+                    else:
+                        sqlite_totals = get_totals_all_categories_in_range(user, start_e, end_e)
+                        table, grand_total = format_totals_table(sqlite_totals)
+                    msg = (
+                        f"📊 Resumen ({label}):\n\n"
+                        f"{table}\n\n"
+                        f"Total general: ${grand_total:.2f}\n\n"
+                        "Usa:\n"
+                        "- resumen 7 | 15 | 30\n"
+                        "- resumen mes\n"
+                        "- resumen <cat>\n"
+                        "- resumen <cat> 7 | 15 | 30 | mes"
+                    )
+                    send_whatsapp_text(user, msg)
                 continue
 
-            sess2 = get_session(user)
-            amount = float(sess2["amount"] or 0.0)
+            # ---------- SALDO (ingresos - gastos) ----------
+            if lowered.startswith("saldo"):
+                parts = lowered.split()[1:]
+                days = None
+                use_month = True if not parts else False
+                if parts:
+                    p1 = parts[0]
+                    if p1 in {"mes"}:
+                        use_month = True
+                    elif p1 in {"7", "15", "30"}:
+                        days = int(p1)
+                    else:
+                        use_month = True
 
-            # Guardar en SQLite
-            save_deposit(user, amount, source)
+                if use_month:
+                    start_e, end_e, label = month_bounds_epoch_ny()
+                elif days:
+                    start_e, end_e, label = last_n_days_bounds_epoch_ny(days)
+                else:
+                    start_e, end_e, label = month_bounds_epoch_ny()
 
-            # Enviar a Google Sheets
-            ok_sheet = append_income_to_google_sheet(user, amount, source)
-            if not ok_sheet:
-                print("Aviso: no se pudo escribir ingreso en Google Sheets.")
+                data_bal = fetch_balance_from_sheets(user, start_e, end_e)
+                if data_bal:
+                    exp_total = float(data_bal.get("expenses_total", 0.0))
+                    inc_total = float(data_bal.get("incomes_total", 0.0))
+                else:
+                    exp_by_cat = get_totals_all_categories_in_range(user, start_e, end_e)
+                    exp_total = sum(exp_by_cat.values())
+                    inc_total = get_income_total_in_range(user, start_e, end_e)
 
-            # Confirmación
+                balance = inc_total - exp_total
+                msg = (
+                    f"📘 *Saldo ({label})*\n"
+                    f"Ingresos: ${inc_total:.2f}\n"
+                    f"Gastos:   ${exp_total:.2f}\n"
+                    f"──────────────\n"
+                    f"*Balance:* ${balance:.2f}"
+                )
+                send_whatsapp_text(user, msg)
+                continue
+
+            # ---------- INICIAR FLUJO DE INGRESO ----------
+            if lowered in INCOME_TRIGGERS:
+                set_session(user, "awaiting_income_amount", None)
+                send_whatsapp_text(user, ask_for_income_amount())
+                continue
+
+            # ---------- INICIAR FLUJO DE GASTO ----------
+            if lowered in TRIGGERS:
+                set_session(user, "awaiting_amount", None)
+                send_whatsapp_text(user, ask_for_amount())
+                continue
+
+            # ---------- ESPERANDO MONTO DE GASTO ----------
+            if state == "awaiting_amount":
+                amount = normalize_amount(text or "")
+                if amount is None or amount <= 0:
+                    send_whatsapp_text(user, "El valor no parece válido. Intenta de nuevo (ej: 12.75).")
+                    continue
+                set_session(user, "awaiting_category", amount)
+                send_whatsapp_text(user, f"Perfecto. Monto registrado: ${amount:.2f}.")
+                ok = send_whatsapp_category_list(user)
+                if not ok:
+                    send_whatsapp_text(
+                        user,
+                        "No pude enviar la lista interactiva.\n"
+                        "Escribe un número del 1 al 8:\n"
+                        "1. Renta\n2. Credit card bill\n3. Medical bill\n4. Utility bill\n"
+                        "5. Car payment\n6. Restaurante\n7. Groceries & housekeeping\n8. Traveling"
+                    )
+                continue
+
+            # ---------- ESPERANDO MONTO DE INGRESO ----------
+            if state == "awaiting_income_amount":
+                amount = normalize_amount(text or "")
+                if amount is None or amount <= 0:
+                    send_whatsapp_text(user, "El monto no parece válido. Intenta de nuevo (ej: 1200.00).")
+                    continue
+                set_session(user, "awaiting_income_source", amount)
+                send_whatsapp_text(user, f"Perfecto. Ingreso: ${amount:.2f}.\n" + ask_for_income_source())
+                continue
+
+            # ---------- ESPERANDO CATEGORÍA (GASTO) ----------
+            if state == "awaiting_category":
+                chosen = None
+                if reply_id and reply_id in CATEGORIES:
+                    chosen = reply_id
+                elif lowered in CATEGORIES:
+                    chosen = lowered
+
+                if chosen:
+                    sess2 = get_session(user)
+                    amount = float(sess2["amount"] or 0.0)
+                    category_id = chosen
+                    category_name = CATEGORIES[category_id]
+
+                    save_expense(user, amount, category_id, category_name)
+                    ok_sheet = append_expense_to_google_sheet(
+                        user=user,
+                        amount=amount,
+                        category_id=category_id,
+                        category_name=category_name
+                    )
+                    if not ok_sheet:
+                        print("Aviso: no se pudo escribir en Google Sheets (Apps Script).")
+
+                    month_start_e, month_end_e, _ = month_bounds_epoch_ny()
+                    totals_m = fetch_totals_from_sheets(user, month_start_e, month_end_e, category_id=int(category_id))
+                    if totals_m:
+                        month_total = float(totals_m.get(str(int(category_id)), 0.0))
+                    else:
+                        month_total = get_total_for_category_in_range(user, category_id, month_start_e, month_end_e)
+
+                    msg = (
+                        "✅ Gasto guardado:\n"
+                        f"- Monto: ${amount:.2f}\n"
+                        f"- Categoría: {category_id}. {category_name}\n\n"
+                        f"📊 Total del mes en *{category_name}*: ${month_total:.2f}\n\n"
+                        "Comandos útiles:\n"
+                        "- *resumen* (todas las entradas)\n"
+                        "- *resumen mes*\n"
+                        "- *resumen 7* | *resumen 15* | *resumen 30*\n"
+                        "- *resumen <cat>* o *resumen <cat> 7|15|30|mes*\n"
+                        "Escribe *ingresar gasto* para capturar otro."
+                    )
+                    send_whatsapp_text(user, msg)
+                    reset_session(user)
+                    continue
+                else:
+                    send_whatsapp_text(
+                        user,
+                        "Respuesta inválida. Elige una opción de la lista o escribe un número del 1 al 8."
+                    )
+                    send_whatsapp_category_list(user)
+                    continue
+
+            # ---------- ESPERANDO ORIGEN DE INGRESO ----------
+            if state == "awaiting_income_source":
+                source = (text or "").strip()
+                if len(source) < 2:
+                    send_whatsapp_text(user, "Por favor escribe un origen válido (ej: Salario, Transferencia).")
+                    continue
+
+                sess2 = get_session(user)
+                amount = float(sess2["amount"] or 0.0)
+
+                save_deposit(user, amount, source)
+                ok_sheet = append_income_to_google_sheet(user, amount, source)
+                if not ok_sheet:
+                    print("Aviso: no se pudo escribir ingreso en Google Sheets.")
+
+                send_whatsapp_text(
+                    user,
+                    "✅ Ingreso guardado:\n"
+                    f"- Monto: ${amount:.2f}\n"
+                    f"- Origen: {source}\n\n"
+                    "Comandos útiles:\n"
+                    "- *saldo mes* | *saldo 7* | *saldo 30*\n"
+                    "- *resumen* / *resumen mes* (gastos)\n"
+                    "- *ingresar ingreso* / *ingresar gasto*"
+                )
+                reset_session(user)
+                continue
+
+            # ---------- IDLE / AYUDA ----------
             send_whatsapp_text(
                 user,
-                "✅ Ingreso guardado:\n"
-                f"- Monto: ${amount:.2f}\n"
-                f"- Origen: {source}\n\n"
-                "Comandos útiles:\n"
-                "- *saldo mes* | *saldo 7* | *saldo 30*\n"
-                "- *resumen* / *resumen mes* (gastos)\n"
-                "- *ingresar ingreso* / *ingresar gasto*"
+                "Hola 👋\n"
+                "Para registrar un gasto, escribe: *ingresar gasto*.\n\n"
+                "Para ver totales, escribe: *resumen* (todas las entradas), *resumen mes*, *resumen 30*, "
+                "*resumen 7*, *resumen 15*, o *resumen <cat>* (1–8).\n"
+                "Comandos: *reset*, *estado*, *ingresar ingreso*, *saldo*"
             )
-            reset_session(user)
-            continue
 
-        # ---------- IDLE / AYUDA ----------
-        send_whatsapp_text(
-            user,
-            "Hola 👋\n"
-            "Para registrar un gasto, escribe: *ingresar gasto*.\n\n"
-            "Para ver totales, escribe: *resumen* (todas las entradas), *resumen mes*, *resumen 30*, "
-            "*resumen 7*, *resumen 15*, o *resumen <cat>* (1–8).\n"
-            "Comandos: *reset*, *estado*"
-        )
+        except Exception as e:
+            print("webhook error:", e)
+            try:
+                # Best-effort notify user
+                user = user if 'user' in locals() else None
+                if user:
+                    send_whatsapp_text(user, "⚠️ Ocurrió un error procesando tu mensaje. Intenta de nuevo.")
+            except Exception:
+                pass
 
     return jsonify(status="ok"), 200
 
 # ======== RUN ========
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
+
+
